@@ -5,8 +5,6 @@ network improve volatility forecasts? This project measures spillovers among 8 m
 indices with the Diebold–Yilmaz framework and uses the resulting network inside a
 graph neural network to forecast volatility 1, 5, 10 and 22 trading days ahead.
 
-**Live app:** https://iamrakii-cross-market-prediction.streamlit.app/
-
 Markets: S&P 500, DAX, CAC 40, FTSE 100, Nifty 50, Nikkei 225, KOSPI, Hang Seng
 (daily, Nov 2007 – Jun 2022, Yahoo Finance).
 
@@ -72,6 +70,13 @@ python -m crossmarket.pipeline      # train + evaluate, writes results/
 streamlit run streamlit_app.py       # or: python run_app.py
 pytest -q && ruff check .
 ```
+
+## Deploy to Streamlit Community Cloud
+
+1. Sign in at [share.streamlit.io](https://share.streamlit.io) with GitHub.
+2. Click **Create app** and choose this repository, branch `main`, main file `streamlit_app.py`.
+3. Deploy. Streamlit installs `requirements.txt` and gives you a public `*.streamlit.app` URL;
+   add it to the top of this README.
 
 To refresh the data: `python -c "from crossmarket.data import download; download(end='2026-01-01')"`,
 then rerun the pipeline.
