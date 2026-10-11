@@ -1,5 +1,9 @@
 # Cross-Market Volatility Prediction with a Spillover Graph Network
 
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://cross-market-prediction-tdrwdxdwvp43cmbx2wnf6h.streamlit.app/)
+
+**Live app:** https://cross-market-prediction-tdrwdxdwvp43cmbx2wnf6h.streamlit.app/
+
 Do volatility shocks spread across global equity markets, and does modelling that
 network improve volatility forecasts? This project measures spillovers among 8 major
 indices with the Diebold–Yilmaz framework and uses the resulting network inside a
