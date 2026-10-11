@@ -1,128 +1,95 @@
-# Cross-Market Prediction Using Dynamic Neural Network
-## Project Setup & Troubleshooting Index
+# Cross-Market Volatility Prediction with a Spillover Graph Network
 
-### 📋 Quick Reference
+Do volatility shocks spread across global equity markets, and does modelling that
+network improve volatility forecasts? This project measures spillovers among 8 major
+indices with the Diebold–Yilmaz framework and uses the resulting network inside a
+graph neural network to forecast volatility 1, 5, 10 and 22 trading days ahead.
 
-**Your Code Status**: ✅ **ERROR-FREE** (All syntax and import errors fixed)  
-**Your Environment Status**: ❌ **NEEDS REPAIR** (NumPy DLL corruption)
+**Live app:** https://iamrakii-cross-market-prediction.streamlit.app/
 
----
+Markets: S&P 500, DAX, CAC 40, FTSE 100, Nifty 50, Nikkei 225, KOSPI, Hang Seng
+(daily, Nov 2007 – Jun 2022, Yahoo Finance).
 
-### 🚀 Get Started in 3 Steps
+## Results (held-out test set, Jul 2019 – May 2022)
 
-1. **Choose a setup method** → Read `SETUP_GUIDE.md`
-2. **Run the fresh environment solution** (Recommended)
-3. **Execute**: `python project.py`
+QLIKE loss, averaged over the 8 markets (lower is better):
 
----
+| Model                  | 1d    | 5d    | 10d   | 22d   |
+|------------------------|-------|-------|-------|-------|
+| Naive (random walk)    | 1.507 | 0.639 | 0.567 | 0.638 |
+| HAR                    | 1.416 | 0.513 | 0.409 | 0.420 |
+| HAR-X (cross-market)   | 1.431 | 0.503 | 0.399 | **0.391** |
+| MLP                    | 1.422 | 0.540 | 0.435 | 0.443 |
+| **Spillover GNN**      | **1.391** | **0.479** | **0.384** | 0.408 |
 
-### 📁 Files in This Directory
+* The spillover GNN is best at 1–10 days; the cross-market linear HAR-X is best at 22 days.
+  Both beat the single-market HAR, i.e. information from other markets helps.
+* Full-sample total spillover index is **52%**. Europe and the US are net transmitters
+  (CAC 40 +29, FTSE +21, DAX +18, S&P 500 +15); Asian markets are net receivers.
 
-#### Core Project Files
-- **`project.py`** - Main project code (FIXED - all errors resolved)
-- **`project_mock.py`** - Demo version with synthetic data (✓ RUNS NOW)
+Reproduce with `python -m crossmarket.pipeline` (~30 s on a laptop CPU).
 
-#### Setup & Troubleshooting
-- **`SETUP_GUIDE.md`** - Step-by-step installation instructions (START HERE)
-- **`TROUBLESHOOTING.md`** - Detailed error solutions and explanations
-- **`STATUS.md`** - Project status overview and next steps
+## Method
 
-#### Configuration Files
-- **`requirements.txt`** - Python package dependencies
-- **`test_imports.py`** - Diagnostic tool to check your environment
-- **`run_project.py`** - Wrapper script for running the project
+1. **Data.** The raw CSVs were forward-filled onto a business-day calendar, so holidays
+   appear as duplicated rows. These are detected and removed before computing returns;
+   otherwise they inject fake zero returns and bias volatility down.
+2. **Spillovers.** VAR on log 21-day realized volatility → generalized FEVD
+   (Pesaran–Shin), which unlike a Cholesky FEVD does not depend on variable ordering →
+   total, directional, net and rolling spillover indices (Diebold & Yilmaz, 2012).
+3. **Forecasting set-up (leak-free).**
+   * Features at day *t*: HAR components (log vol over the last 1, 5, 22 days) of all markets.
+   * Target: realized volatility over days *t+1 … t+h*, which never overlaps the features.
+   * Chronological 60/20/20 train/validation/test split with an *h*-day gap at each boundary;
+     scaling and the spillover graph are fitted on training data only; the test set is used once.
+4. **Models.** Random walk; HAR (Corsi, 2009); cross-market HAR-X (ridge); MLP; and the
+   spillover GNN: multi-head graph attention whose attention logits are biased by the
+   training-period spillover network, with per-market embeddings and a linear HAR-style
+   skip path. Neural models use early stopping on validation loss. All fitted models get
+   a training-set log-to-variance bias correction (fitting in logs targets the median).
+5. **Evaluation.** QLIKE (robust to noise in the volatility proxy; Patton, 2011), plus
+   MAE, RMSE, MAPE and R² on log volatility, overall and per market.
 
----
+## Project layout
 
-### ✅ What's Been Fixed
-
-| Issue | Status | Notes |
-|-------|--------|-------|
-| Line 288 indentation error | ✅ FIXED | Corrected print statement indentation |
-| Line 290 unindent error | ✅ FIXED | Resolved cascading indentation issue |
-| PyTorch import warnings | ✅ FIXED | Added `# type: ignore` comments |
-| No syntax errors | ✅ VERIFIED | Pylance reports no syntax errors |
-
----
-
-### ❌ Current Environment Issue
-
-**Problem**: NumPy C-extension DLL cannot load
 ```
-ImportError: DLL load failed while importing _multiarray_umath
-```
-
-**Solutions** (ranked by reliability):
-1. 🥇 Create fresh conda environment (95% success)
-2. 🥈 Use Python virtual environment (85% success)
-3. 🥉 Fix current environment (40% success)
-
-See `SETUP_GUIDE.md` for detailed instructions.
-
----
-
-### 🧪 Test Your Setup
-
-After installing, run these tests in order:
-
-```powershell
-# Test 1: Check imports
-python test_imports.py
-
-# Test 2: Run with synthetic data (no downloads needed)
-python project_mock.py
-
-# Test 3: Run full project (requires internet for data)
-python project.py
+crossmarket/
+  data.py          loading, holiday masking, returns, realized volatility, yfinance refresh
+  spillover.py     generalized FEVD and Diebold–Yilmaz spillover measures
+  forecasting.py   features/targets, baselines, MLP, spillover GNN, training, metrics
+  pipeline.py      end-to-end run, writes results/
+streamlit_app.py   web app (all figures computed from data/ and results/)
+data/              daily OHLCV for the 8 indices
+results/           metrics, test-set predictions, training curves
+tests/             pytest suite (incl. look-ahead/leakage checks)
 ```
 
----
+## Quick start
 
-### 📊 Project Overview
+```bash
+pip install -r requirements-dev.txt
+python -m crossmarket.pipeline      # train + evaluate, writes results/
+streamlit run streamlit_app.py       # or: python run_app.py
+pytest -q && ruff check .
+```
 
-This project implements a cross-market volatility prediction system using:
+To refresh the data: `python -c "from crossmarket.data import download; download(end='2026-01-01')"`,
+then rerun the pipeline.
 
-**Data**: 8 global stock indices (S&P500, DAX, CAC, FTSE, NIFTY, Nikkei, KOSPI, Hang Seng)
+## Changes from the original version
 
-**Methods**:
-- Realized volatility calculation (21-day rolling window)
-- Volatility spillover network using VAR-FEVD
-- Graph Neural Networks (GCN + GAT)
-- Baseline MLP model for comparison
+* The web app previously displayed random numbers (`np.random`) for statistics,
+  spillovers, training curves and forecast metrics; every figure is now computed from real data.
+* The original GNN fed a (time × market) matrix in as if each time step were a graph node,
+  so the graph structure was not actually used; markets are now the nodes.
+* The MLP produced 1 output for 8 targets (silently broadcast), and its evaluation used the
+  last grid-search model instead of the best one.
+* Multi-horizon metrics compared a 1-day forecast with the value *h* days later; each
+  horizon now has its own target and models.
+* Model selection and reporting both used the validation set; reporting now uses a separate test set.
+* Removed `torch-geometric` (a dense implementation suffices for 8 nodes), the unused Flask
+  template, stale/duplicate guides, and a stray `$null` file; added tests and CI.
 
-**Output**: Prediction accuracy metrics at multiple horizons (1, 5, 10, 22 days)
+## License
 
----
-
-### 🎯 Recommended Next Action
-
-1. Open PowerShell or Anaconda Prompt
-2. Follow **Solution 1** from `SETUP_GUIDE.md`
-3. Your fresh environment will have everything working
-
-**Expected time**: 5-10 minutes
-
----
-
-### 📞 Help Resources
-
-- **NumPy Troubleshooting**: https://numpy.org/devdocs/user/troubleshooting-importerror.html
-- **Conda Documentation**: https://docs.conda.io/
-- **PyTorch Setup**: https://pytorch.org/get-started/locally/
-- **PyTorch Geometric**: https://pytorch-geometric.readthedocs.io/
-
----
-
-### 💡 Quick Tips
-
-- The **mock version** (`project_mock.py`) demonstrates your code works perfectly
-- The **environment issue** is not your code's fault - it's a known NumPy problem
-- A **fresh environment** solves 95% of these issues
-- Your code is **production-ready** once environment is fixed
-
----
-
-**Last Updated**: December 2, 2025  
-**Status**: Code Ready ✅ | Environment Needs Setup ❌
-
-**Start with**: `SETUP_GUIDE.md` → Follow Solution 1 → Run `python project.py`
+GPL-3.0 — see [LICENSE](LICENSE).

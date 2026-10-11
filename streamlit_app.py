@@ -1,410 +1,195 @@
-import streamlit as st
-import pandas as pd
+"""Streamlit front-end. Every number shown is computed from the data in data/."""
+import json
+from pathlib import Path
+
 import numpy as np
-import plotly.express as px  # type: ignore
-import plotly.graph_objects as go  # type: ignore
-import torch  # type: ignore
-import networkx as nx  # type: ignore
-import warnings
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
 
-warnings.filterwarnings('ignore')
+from crossmarket.data import MARKETS, load_closes, log_returns, realized_volatility
+from crossmarket.pipeline import RESULTS_DIR
+from crossmarket.spillover import generalized_fevd, rolling_total_spillover, spillover_table
 
-# Set page config
-st.set_page_config(
-    page_title="Cross-Market Prediction",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Cross-Market Prediction", page_icon="📈", layout="wide")
 
-# Custom CSS
-st.markdown("""
-    <style>
-        .main {
-            padding-top: 2rem;
-        }
-        .metric-card {
-            background-color: #f0f2f6;
-            padding: 1.5rem;
-            border-radius: 0.5rem;
-            margin: 0.5rem 0;
-        }
-        .header-title {
-            color: #1f77b4;
-            font-size: 2.5rem;
-            font-weight: bold;
-            margin-bottom: 1rem;
-        }
-        .section-header {
-            color: #1f77b4;
-            font-size: 1.8rem;
-            font-weight: bold;
-            margin-top: 2rem;
-            margin-bottom: 1rem;
-            border-bottom: 2px solid #1f77b4;
-            padding-bottom: 0.5rem;
-        }
-    </style>
-""", unsafe_allow_html=True)
 
-# Sidebar
-st.sidebar.markdown("# ⚙️ Configuration")
-st.sidebar.markdown("---")
+@st.cache_data
+def load():
+    closes = load_closes()
+    returns = log_returns(closes)
+    return closes, returns, realized_volatility(returns)
 
-# Main title
-st.markdown('<div class="header-title">📊 Cross-Market Prediction using Dynamic Neural Network</div>', unsafe_allow_html=True)
 
-st.markdown("""
-This application provides advanced cross-market volatility prediction using Graph Neural Networks (GNN) 
-and Multi-Layer Perceptron (MLP) models. It analyzes volatility spillover effects across major global stock markets.
-""")
+@st.cache_data
+def fevd_for(start, end, lags, horizon):
+    _, _, rv = load()
+    return generalized_fevd(np.log(rv.loc[start:end]), lags, horizon)
 
-# Navigation
-st.sidebar.markdown("### Navigation")
-page = st.sidebar.radio(
-    "Select a page:",
-    ["📈 Dashboard", "📊 Data Analysis", "🔄 Spillover Analysis", "🤖 Model Training", "📉 Forecasting", "ℹ️ About"]
-)
 
-# ==================== DASHBOARD PAGE ====================
-if page == "📈 Dashboard":
-    st.markdown('<div class="section-header">Market Overview Dashboard</div>', unsafe_allow_html=True)
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(label="Markets", value="8", delta="Global")
-    with col2:
-        st.metric(label="Data Period", value="2007-2022", delta="15 years")
-    with col3:
-        st.metric(label="Models", value="2", delta="GNN + MLP")
-    with col4:
-        st.metric(label="Horizons", value="4", delta="1, 5, 10, 22 days")
-    
-    st.markdown('<div class="section-header">Key Features</div>', unsafe_allow_html=True)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("""
-        ### 🎯 Model Architectures
-        - **GCN + GAT**: Graph Convolutional Network with Graph Attention
-        - **MLP**: Multi-Layer Perceptron baseline
-        - Both models trained on volatility spillover data
-        - Hyperparameter grid search optimization
-        """)
-    
-    with col2:
-        st.markdown("""
-        ### 📍 Stock Markets Analyzed
-        1. **S&P 500** (^GSPC) - USA
-        2. **DAX** (^GDAXI) - Germany
-        3. **CAC 40** (^FCHI) - France
-        4. **FTSE 100** (^FTSE) - UK
-        5. **Nifty 50** (^NSEI) - India
-        6. **Nikkei 225** (^N225) - Japan
-        7. **KOSPI** (^KS11) - South Korea
-        8. **Hang Seng** (^HSI) - Hong Kong
-        """)
+@st.cache_data
+def rolling_spill(window, lags, horizon):
+    _, _, rv = load()
+    return rolling_total_spillover(np.log(rv), window=window, step=5, lags=lags, horizon=horizon)
 
-# ==================== DATA ANALYSIS PAGE ====================
-elif page == "📊 Data Analysis":
-    st.markdown('<div class="section-header">Data Analysis & Statistics</div>', unsafe_allow_html=True)
-    
-    # Stock selection
-    tickers = ['^GSPC', '^GDAXI', '^FCHI', '^FTSE', '^NSEI', '^N225', '^KS11', '^HSI']
-    ticker_names = {
-        '^GSPC': 'S&P 500 (USA)',
-        '^GDAXI': 'DAX (Germany)',
-        '^FCHI': 'CAC 40 (France)',
-        '^FTSE': 'FTSE 100 (UK)',
-        '^NSEI': 'Nifty 50 (India)',
-        '^N225': 'Nikkei 225 (Japan)',
-        '^KS11': 'KOSPI (South Korea)',
-        '^HSI': 'Hang Seng (Hong Kong)'
+
+@st.cache_data
+def load_results(results_dir=str(RESULTS_DIR)):
+    d = Path(results_dir)
+    if not (d / "metrics.csv").exists():
+        return None
+    return {
+        "metrics": pd.read_csv(d / "metrics.csv"),
+        "history": json.loads((d / "history.json").read_text()),
+        "splits": json.loads((d / "splits.json").read_text()),
+        "preds": {h: pd.read_csv(d / f"predictions_h{h}.csv", header=[0, 1], index_col=0,
+                                 parse_dates=True)
+                  for h in (1, 5, 10, 22) if (d / f"predictions_h{h}.csv").exists()},
     }
-    
-    selected_tickers = st.multiselect(
-        "Select Markets:",
-        options=tickers,
-        default=tickers[:3],
-        format_func=lambda x: ticker_names[x]
-    )
-    
-    if selected_tickers:
-        st.info(f"📌 Selected {len(selected_tickers)} market(s) for analysis")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("### Data Statistics")
-            stats_data: dict[str, list[float | str]] = {  # type: ignore
-                'Market': [ticker_names[t] for t in selected_tickers],
-                'Trading Days': [3800 + np.random.randint(-200, 200) for _ in selected_tickers],
-                'Data Quality (%)': [98 + np.random.random() * 2 for _ in selected_tickers],
-            }
-            st.dataframe(pd.DataFrame(stats_data), use_container_width=True)  # type: ignore
-        
-        with col2:
-            st.markdown("### Data Period")
-            st.write("📅 **Start Date:** 2007-11-06")
-            st.write("📅 **End Date:** 2022-06-03")
-            st.write("📊 **Total Trading Days:** ~3,820")
-            st.write("📈 **Data Quality:** 99.2% (Forward/Backward Filled)")
 
-# ==================== SPILLOVER ANALYSIS PAGE ====================
-elif page == "🔄 Spillover Analysis":
-    st.markdown('<div class="section-header">Volatility Spillover Analysis</div>', unsafe_allow_html=True)
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.markdown("""
-        ### Spillover Index Methodology
-        The volatility spillover index measures how shocks in one market's volatility affect other markets.
-        Using the Diebold-Yilmaz methodology with VAR (Vector Autoregression) models.
-        """)
-    
-    with col2:
-        dataset_choice = st.radio("Select Dataset:", ["Training", "Validation", "Test"])
-    
-    st.markdown("### Spillover Matrix (Training Data)")
-    
-    # Generate sample spillover matrix
-    markets = ['S&P 500', 'DAX', 'CAC 40', 'FTSE 100', 'Nifty 50', 'Nikkei 225', 'KOSPI', 'Hang Seng']
-    spillover_data = np.random.rand(8, 8) * 0.3 + 0.1
-    np.fill_diagonal(spillover_data, 0)
-    
-    spillover_df = pd.DataFrame(spillover_data, index=markets, columns=markets)
-    
-    # Display heatmap
-    fig = go.Figure(data=go.Heatmap(
-        z=spillover_data,
-        x=markets,
-        y=markets,
-        colorscale='RdYlBu_r',
-        text=np.round(spillover_data, 3),
-        texttemplate='%{text:.2f}',
-        textfont={"size": 10},
-    ))
-    fig.update_layout(  # type: ignore
-        title="Volatility Spillover Index Heatmap",
-        xaxis_title="To Market",
-        yaxis_title="From Market",
-        height=600,
-        width=800
-    )
-    st.plotly_chart(fig, use_container_width=True)  # type: ignore
-    
-    # Spillover index metrics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        total_spillover = np.sum(spillover_data) / (8 * 7) * 100
-        st.metric("Total Spillover Index", f"{total_spillover:.2f}%")
-    
-    with col2:
-        from_others = spillover_data.sum(axis=0).mean() * 100
-        st.metric("Avg Received Shocks", f"{from_others:.2f}%")
-    
-    with col3:
-        to_others = spillover_data.sum(axis=1).mean() * 100
-        st.metric("Avg Transmitted Shocks", f"{to_others:.2f}%")
-    
-    with col4:
-        net_spillover = (spillover_data.sum(axis=1) - spillover_data.sum(axis=0)).mean() * 100
-        st.metric("Net Spillover", f"{net_spillover:.2f}%")
 
-# ==================== MODEL TRAINING PAGE ====================
-elif page == "🤖 Model Training":
-    st.markdown('<div class="section-header">Model Training & Evaluation</div>', unsafe_allow_html=True)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("### GCN + GAT Model")
-        st.write("**Architecture:** Graph Convolutional Network + Graph Attention Network")
-        st.write("**Epochs:** 50")
-        st.write("**Best Validation Loss:** 0.0234")
-        st.write("**Training Time:** ~45 minutes")
-        
-        st.markdown("#### Hyperparameters")
-        gcn_params: dict[str, int | float] = {  # type: ignore
-            'Hidden Dim': 64,
-            'Num Heads': 4,
-            'Num Layers': 3,
-            'Learning Rate': 0.001,
-            'Dropout Rate': 0.3
-        }
-        for param, value in gcn_params.items():  # type: ignore
-            st.write(f"- {param}: {value}")
-    
-    with col2:
-        st.markdown("### MLP Model")
-        st.write("**Architecture:** Multi-Layer Perceptron (Baseline)")
-        st.write("**Epochs:** 50")
-        st.write("**Best Validation Loss:** 0.0451")
-        st.write("**Training Time:** ~12 minutes")
-        
-        st.markdown("#### Hyperparameters")
-        mlp_params: dict[str, int | float] = {  # type: ignore
-            'Hidden Dim': 128,
-            'Learning Rate': 0.001,
-            'Dropout Rate': 0.5
-        }
-        for param, value in mlp_params.items():  # type: ignore
-            st.write(f"- {param}: {value}")
-    
-    st.markdown('<div class="section-header">Training History</div>', unsafe_allow_html=True)
-    
-    # Generate sample training curves
-    epochs = np.arange(1, 51)
-    train_loss_gcn = 0.5 * np.exp(-epochs / 15) + 0.02 + np.random.randn(50) * 0.01
-    val_loss_gcn = 0.5 * np.exp(-epochs / 15) + 0.03 + np.random.randn(50) * 0.015
-    
+closes, returns, rv = load()
+name = lambda t: MARKETS.get(t, t)  # noqa: E731
+
+st.sidebar.title("📈 Cross-Market Prediction")
+page = st.sidebar.radio("Page", ["Dashboard", "Data Analysis", "Spillover Analysis",
+                                 "Forecasting Models", "About"])
+
+if page == "Dashboard":
+    st.title("Cross-market volatility spillovers")
+    c = st.columns(4)
+    c[0].metric("Markets", len(closes.columns))
+    c[1].metric("Period", f"{closes.index[0]:%Y-%m} → {closes.index[-1]:%Y-%m}")
+    c[2].metric("Trading days (avg)", f"{int(closes.notna().sum().mean()):,}")
+    total = spillover_table(fevd_for(None, None, 2, 10))["total"]
+    c[3].metric("Total spillover index", f"{total:.1f}%")
+
+    latest = rv.iloc[-1].rename("Current 21d vol")
+    longrun = rv.mean().rename("Long-run avg vol")
+    tbl = pd.concat([latest, longrun], axis=1).rename(index=name)
+    st.subheader("Annualized realized volatility (21-day)")
+    st.dataframe(tbl.style.format("{:.1%}"), width="stretch")
+    fig = px.line(rv.rename(columns=name), labels={"value": "Annualized vol", "variable": "Market"})
+    fig.update_yaxes(tickformat=".0%")
+    st.plotly_chart(fig, width="stretch")
+
+elif page == "Data Analysis":
+    st.title("Data analysis")
+    sel = st.multiselect("Markets", list(closes.columns), default=list(closes.columns[:3]),
+                         format_func=name)
+    if sel:
+        norm = closes[sel].ffill()
+        norm = norm / norm.iloc[0] * 100
+        st.plotly_chart(px.line(norm.rename(columns=name), title="Price, rebased to 100"),
+                        width="stretch")
+        r = returns[sel]
+        stats = pd.DataFrame({
+            "Trading days": r.notna().sum(),
+            "Ann. return": r.mean() * 252,
+            "Ann. vol": r.std() * np.sqrt(252),
+            "Skew": r.skew(),
+            "Kurtosis": r.kurt() + 3,
+            "Worst day": r.min(),
+            "Best day": r.max(),
+        }).rename(index=name)
+        st.dataframe(stats.style.format({"Trading days": "{:,.0f}", "Ann. return": "{:.1%}",
+                                         "Ann. vol": "{:.1%}", "Skew": "{:.2f}",
+                                         "Kurtosis": "{:.1f}", "Worst day": "{:.1%}",
+                                         "Best day": "{:.1%}"}), width="stretch")
+        st.subheader("Correlation of daily returns")
+        corr = returns.corr().rename(index=name, columns=name)
+        st.plotly_chart(px.imshow(corr, text_auto=".2f", color_continuous_scale="RdBu_r",
+                                  zmin=-1, zmax=1), width="stretch")
+
+elif page == "Spillover Analysis":
+    st.title("Diebold–Yilmaz volatility spillovers")
+    st.caption("Generalized FEVD of a VAR on log realized volatility (order-invariant). "
+               "Row i, column j = % of market i's forecast-error variance due to shocks in j.")
+    c = st.columns(3)
+    lags = c[0].slider("VAR lags", 1, 5, 2)
+    horizon = c[1].slider("Forecast horizon H", 5, 20, 10)
+    years = rv.index.year
+    yr = c[2].slider("Years", int(years.min()), int(years.max()),
+                     (int(years.min()), int(years.max())))
+    fevd = fevd_for(str(yr[0]), str(yr[1]), lags, horizon)
+    tab = spillover_table(fevd)
+    st.metric("Total spillover index", f"{tab['total']:.1f}%")
+    lbl = fevd.rename(index=name, columns=name)
+    st.plotly_chart(px.imshow(lbl, text_auto=".1f", color_continuous_scale="Blues",
+                              labels={"x": "From (shock in)", "y": "To (variance of)"}),
+                    width="stretch")
+    d = pd.DataFrame({"To others": tab["to"], "From others": tab["from"],
+                      "Net": tab["net"]}).rename(index=name)
+    st.plotly_chart(px.bar(d["Net"].sort_values(), orientation="h",
+                           title="Net spillover (transmitter > 0, receiver < 0)"),
+                    width="stretch")
+    st.subheader("Total spillover over time (rolling 200-day window)")
+    st.plotly_chart(px.line(rolling_spill(200, lags, horizon)), width="stretch")
+
+elif page == "Forecasting Models":
+    st.title("Volatility forecasting models")
+    res = load_results()
+    if res is None:
+        st.warning("No results yet. Run `python -m crossmarket.pipeline` to train the models.")
+        st.stop()
+    st.markdown(
+        "Target: realized volatility over the **next h trading days** (no overlap with inputs). "
+        "Inputs: HAR components (1/5/22-day vol) of all 8 markets. Chronological split; "
+        "models selected on validation, scores below are on the untouched **test** set.")
+    st.json(res["splits"]["1"], expanded=False)
+    m = res["metrics"]
+    metric = st.selectbox("Metric", ["QLIKE", "RMSE", "MAE", "MAPE", "R2_log"])
+    summ = m[m.market == "All"].pivot(index="model", columns="horizon", values=metric)
+    best = summ.idxmax() if metric == "R2_log" else summ.idxmin()
+    st.dataframe(summ.style.format("{:.4f}").highlight_min(axis=0, color="#c6efce")
+                 if metric != "R2_log" else
+                 summ.style.format("{:.4f}").highlight_max(axis=0, color="#c6efce"),
+                 width="stretch")
+    st.caption("Best per horizon: " + ", ".join(f"{h}d → {b}" for h, b in best.items()))
+
+    c = st.columns(2)
+    h = c[0].selectbox("Horizon (days)", sorted(res["preds"]))
+    mk = c[1].selectbox("Market", list(MARKETS), format_func=name)
+    preds = res["preds"][h]
+    models = [x for x in preds.columns.get_level_values(0).unique() if x != "Actual"]
+    chosen = st.multiselect("Models", models, default=["HAR", "Spillover GNN"])
     fig = go.Figure()
-    fig.add_trace(go.Scatter(  # type: ignore
-        x=epochs, y=train_loss_gcn,
-        mode='lines', name='Training Loss',
-        line=dict(color='blue', width=2)
-    ))
-    fig.add_trace(go.Scatter(  # type: ignore
-        x=epochs, y=val_loss_gcn,
-        mode='lines', name='Validation Loss',
-        line=dict(color='red', width=2)
-    ))
-    fig.update_layout(  # type: ignore
-        title="GCN+GAT Model Training History",
-        xaxis_title="Epoch",
-        yaxis_title="Loss",
-        height=400,
-        hovermode='x unified'
-    )
-    st.plotly_chart(fig, use_container_width=True)  # type: ignore
+    fig.add_scatter(x=preds.index, y=preds[("Actual", mk)], name="Actual", line_color="gray")
+    for mod in chosen:
+        fig.add_scatter(x=preds.index, y=preds[(mod, mk)], name=mod)
+    fig.update_layout(title=f"{name(mk)} — {h}-day-ahead volatility (test set)",
+                      yaxis_tickformat=".0%")
+    st.plotly_chart(fig, width="stretch")
 
-# ==================== FORECASTING PAGE ====================
-elif page == "📉 Forecasting":
-    st.markdown('<div class="section-header">Volatility Forecasting</div>', unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        selected_market = st.selectbox(
-            "Select Market for Forecast:",
-            ["S&P 500", "DAX", "CAC 40", "FTSE 100", "Nifty 50", "Nikkei 225", "KOSPI", "Hang Seng"]
-        )
-    
-    with col2:
-        forecast_horizon = st.selectbox(
-            "Forecast Horizon (Days):",
-            [1, 5, 10, 22]
-        )
-    
-    with col3:
-        st.write("")
-        if st.button("📊 Generate Forecast", use_container_width=True):
-            st.success("✅ Forecast generated successfully!")
-    
-    st.markdown("### Performance Metrics")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("MAFE", f"{np.random.rand() * 0.05:.4f}", "-0.002")
-    
-    with col2:
-        st.metric("MSE", f"{np.random.rand() * 0.001:.5f}", "-0.0001")
-    
-    with col3:
-        st.metric("RMSE", f"{np.random.rand() * 0.015:.4f}", "-0.001")
-    
-    with col4:
-        st.metric("MAPE", f"{np.random.rand() * 5 + 2:.2f}%", "-0.5%")
-    
-    st.markdown("### Forecast Visualization")
-    
-    # Generate forecast data
-    days = np.arange(0, 22)
-    actual = 0.15 + 0.02 * np.sin(days / 5) + np.random.randn(22) * 0.01
-    forecast = 0.15 + 0.02 * np.sin(days / 5) + np.random.randn(22) * 0.008
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(  # type: ignore
-        x=days, y=actual,
-        mode='lines+markers', name='Actual Volatility',
-        line=dict(color='blue', width=2),
-        marker=dict(size=6)
-    ))
-    fig.add_trace(go.Scatter(  # type: ignore
-        x=days, y=forecast,
-        mode='lines+markers', name='Forecasted Volatility',
-        line=dict(color='red', width=2, dash='dash'),
-        marker=dict(size=6)
-    ))
-    fig.update_layout(  # type: ignore
-        title=f"Volatility Forecast - {selected_market} (Horizon: {forecast_horizon} days)",
-        xaxis_title="Days",
-        yaxis_title="Volatility",
-        height=400,
-        hovermode='x unified'
-    )
-    st.plotly_chart(fig, use_container_width=True)  # type: ignore
+    per = m[(m.horizon == h) & (m.market != "All")].pivot(index="market", columns="model",
+                                                           values=metric)
+    st.dataframe(per.rename(index=name).style.format("{:.4f}"), width="stretch")
 
-# ==================== ABOUT PAGE ====================
-elif page == "ℹ️ About":
-    st.markdown('<div class="section-header">About This Project</div>', unsafe_allow_html=True)
-    
+    hist = res["history"][str(h)]
+    if hist:
+        fig = go.Figure()
+        for mod, hh in hist.items():
+            fig.add_scatter(y=hh["train"], name=f"{mod} train")
+            fig.add_scatter(y=hh["val"], name=f"{mod} val", line_dash="dash")
+        fig.update_layout(title="Training curves (standardized MSE, early stopping)",
+                          xaxis_title="Epoch")
+        st.plotly_chart(fig, width="stretch")
+
+else:
+    st.title("About")
     st.markdown("""
-    ## Cross-Market Prediction using Dynamic Neural Network
-    
-    ### Project Overview
-    This application demonstrates advanced machine learning techniques for predicting volatility spillover 
-    effects across international stock markets. It combines graph neural networks with traditional MLPs 
-    to capture complex market dependencies.
-    
-    ### Key Technologies
-    - **PyTorch Geometric**: Graph neural network framework
-    - **Streamlit**: Web application framework
-    - **Plotly**: Interactive visualizations
-    - **Statsmodels**: Time series analysis (VAR models)
-    
-    ### Data Sources
-    - Yahoo Finance (yfinance)
-    - 8 major global stock markets
-    - 15-year historical data (2007-2022)
-    
-    ### Models
-    1. **Graph Convolutional Network (GCN) + Graph Attention Network (GAT)**
-       - Captures market network structure
-       - Attention mechanisms for relationship weighting
-       - Superior performance on spillover prediction
-    
-    2. **Multi-Layer Perceptron (MLP)**
-       - Baseline model for comparison
-       - Fully connected architecture
-       - Fast training and inference
-    
-    ### Features
-    - Real-time market data analysis
-    - Volatility spillover quantification
-    - Multi-step ahead forecasting (1, 5, 10, 22 days)
-    - Interactive visualizations
-    - Model performance comparisons
-    
-    ### Contact & References
-    - Dataset: 2007-11-06 to 2022-06-03
-    - Methodology: Diebold-Yilmaz Spillover Index
-    - Optimization: Grid search with cross-validation
-    
-    ---
-    *Last Updated: January 3, 2026*
-    """)
+**Question.** Do volatility shocks spread across global equity markets, and does modelling
+that network improve volatility forecasts?
 
-# Footer
-st.markdown("---")
-st.markdown("""
-<div style='text-align: center; color: gray; font-size: 0.9rem;'>
-    <p>📊 Cross-Market Prediction | Powered by Streamlit & PyTorch</p>
-    <p>Data Source: Yahoo Finance | Period: 2007-2022</p>
-</div>
-""", unsafe_allow_html=True)
+**Method.**
+1. Daily log returns for 8 indices; holiday rows that were forward-filled in the raw data are
+   removed so they don't inject artificial zero returns.
+2. Diebold–Yilmaz (2012) spillover index from a generalized FEVD of a VAR on log volatility.
+3. Forecast models, from simple to complex: random walk, HAR (Corsi 2009), cross-market HAR-X,
+   MLP, and a graph network whose message passing is weighted by the training-period
+   spillover network plus learned attention.
+4. Evaluation with QLIKE (Patton 2011), which is robust to noise in the volatility proxy.
+
+Source code: `crossmarket/` package. Data: Yahoo Finance via `yfinance`.
+""")

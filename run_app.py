@@ -2,9 +2,10 @@
 """
 Streamlit Web App Launcher for Cross-Market Prediction
 """
+import os
 import subprocess
 import sys
-import os
+
 
 def run_streamlit_app():
     """Launch the Streamlit web application"""
